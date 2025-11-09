@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["secwast"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+version = "0.1.0"
+rust-version = "1.91.0"
+
+[workspace.lints]
