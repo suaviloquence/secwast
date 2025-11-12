@@ -518,11 +518,11 @@ impl<'a> Peek for RefType<'a> {
 
 /// The types of values that may be used in a struct or array.
 #[allow(missing_docs)]
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum StorageType<'a> {
     I8,
     I16,
-    Val(ValType<'a>),
+    Val(LabeledValType<'a>),
 }
 
 impl<'a> Parse<'a> for StorageType<'a> {
@@ -543,10 +543,10 @@ impl<'a> Parse<'a> for StorageType<'a> {
 }
 
 /// Type for a `global` in a wasm module
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GlobalType<'a> {
     /// The element type of this `global`
-    pub ty: ValType<'a>,
+    pub ty: LabeledValType<'a>,
     /// Whether or not the global is mutable or not.
     pub mutable: bool,
     /// Whether or not the global is shared.
@@ -687,9 +687,15 @@ impl<'a> Parse<'a> for MemoryType {
 pub struct FunctionType<'a> {
     /// The parameters of a function, optionally each having an identifier for
     /// name resolution and a name for the custom `name` section.
-    pub params: Box<[(Option<Id<'a>>, Option<NameAnnotation<'a>>, ValType<'a>)]>,
+    pub params: Box<
+        [(
+            Option<Id<'a>>,
+            Option<NameAnnotation<'a>>,
+            LabeledValType<'a>,
+        )],
+    >,
     /// The results types of a function.
-    pub results: Box<[ValType<'a>]>,
+    pub results: Box<[LabeledValType<'a>]>,
 }
 
 impl<'a> FunctionType<'a> {

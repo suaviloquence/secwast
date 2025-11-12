@@ -1696,7 +1696,7 @@ impl<'a> Parse<'a> for I8x16Shuffle {
 #[derive(Debug, Clone)]
 pub struct SelectTypes<'a> {
     #[allow(missing_docs)]
-    pub tys: Option<Vec<ValType<'a>>>,
+    pub tys: Option<Vec<LabeledValType<'a>>>,
 }
 
 impl<'a> Parse<'a> for SelectTypes<'a> {

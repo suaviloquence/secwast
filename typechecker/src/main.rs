@@ -6,7 +6,7 @@ fn main() {
       (memory $memory 1)
       (export "memory" (memory $memory))
 
-      (func (export "load_first_item_in_mem") (param $num i32) (result i32)
+      (func (export "load_first_item_in_mem") @label "M" (param $num @label "H" i32) (result @label "L" i32)
         i32.const 0
 
         ;; load first item in memory and return the result

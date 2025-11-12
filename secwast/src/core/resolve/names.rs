@@ -74,7 +74,7 @@ impl<'a> Resolver<'a> {
         // `call_indirect`.
         match &ty.def.kind {
             InnerTypeKind::Func(f) => {
-                let params = f.params.iter().map(|p| p.2).collect();
+                let params = f.params.iter().map(|p| p.2.clone()).collect();
                 let results = f.results.clone();
                 self.type_info.push(TypeInfo::Func { params, results });
             }
@@ -322,7 +322,7 @@ impl<'a> Resolver<'a> {
         ResolveCoreType::resolve_type(&mut &*self, ty)
     }
 
-    fn resolve_valtype(&self, ty: &mut ValType<'a>) -> Result<(), Error> {
+    fn resolve_valtype(&self, ty: &mut LabeledValType<'a>) -> Result<(), Error> {
         ResolveCoreType::resolve_valtype(&mut &*self, ty)
     }
 
@@ -581,8 +581,9 @@ impl<'a, 'b> ExprResolver<'a, 'b> {
 
 enum TypeInfo<'a> {
     Func {
-        params: Box<[ValType<'a>]>,
-        results: Box<[ValType<'a>]>,
+        // pc: LabelAnnotation<'a>,
+        params: Box<[LabeledValType<'a>]>,
+        results: Box<[LabeledValType<'a>]>,
     },
     Other,
 }
@@ -620,9 +621,9 @@ impl<'a> TypeReference<'a> for FunctionType<'a> {
         // we should be resolved. In any case we do name resolution
         // opportunistically here to see if the values are equal.
 
-        let types_not_equal = |a: &ValType, b: &ValType| {
-            let mut a = *a;
-            let mut b = *b;
+        let types_not_equal = |a: &LabeledValType, b: &LabeledValType| {
+            let mut a = a.clone();
+            let mut b = b.clone();
             drop((&cx).resolve_valtype(&mut a));
             drop((&cx).resolve_valtype(&mut b));
             a != b
@@ -692,8 +693,8 @@ pub(crate) trait ResolveCoreType<'a> {
         Ok(())
     }
 
-    fn resolve_valtype(&mut self, ty: &mut ValType<'a>) -> Result<(), Error> {
-        match ty {
+    fn resolve_valtype(&mut self, ty: &mut LabeledValType<'a>) -> Result<(), Error> {
+        match &mut ty.ty {
             ValType::Ref(ty) => self.resolve_reftype(ty),
             ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64 | ValType::V128 => Ok(()),
         }

@@ -31,7 +31,7 @@ mod instruction {
 pub use instruction::Instruction as MemoryInstruction;
 
 use crate::{
-    core::MemArg,
+    core::{MemArg, ValType},
     encode::Encode,
     parser::{self, Parse, Parser},
 };
@@ -40,8 +40,9 @@ use crate::{
 ///
 /// NB: the [`PartialEq`] and [`Eq`] implementations compare *syntactic* equality,
 /// not necessarily *semantic* equivalence.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Label<'a> {
+    /// Base case: a label \in \mathcal{L}
     Id(&'a str),
     // Join(Box<(Label<'a>, Label<'a>)>),
 }
@@ -56,8 +57,10 @@ mod annotation {
     crate::annotation!(label);
 }
 
-#[derive(Clone, Debug)]
+/// A `@label {label}` annotation on a type, memory instruction, or function.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LabelAnnotation<'a> {
+    /// The label argument to the annotation.
     pub label: Label<'a>,
 }
 
@@ -70,9 +73,12 @@ impl<'a> Parse<'a> for LabelAnnotation<'a> {
     }
 }
 
-#[derive(Debug)]
+/// A memory instruction which requires a syntactic `@label` annotation/
+#[derive(Debug, Clone)]
 pub struct LabeledInstruction<'a> {
+    /// The label for the instruction
     pub label: LabelAnnotation<'a>,
+    /// The memory instruction
     pub instruction: MemoryInstruction<'a>,
 }
 
@@ -85,9 +91,12 @@ impl<'a> Parse<'a> for LabeledInstruction<'a> {
     }
 }
 
-#[derive(Debug)]
+/// All possible instructions in a SecWasm program.
+#[derive(Debug, Clone)]
 pub enum AllInstructions<'a> {
+    /// A labeled memory instruction
     Labeled(LabeledInstruction<'a>),
+    /// An instruction that does not need a label.
     Other(super::Instruction<'a>),
 }
 
@@ -97,7 +106,11 @@ impl<'a> Parse<'a> for AllInstructions<'a> {
         if parser.peek::<annotation::label>()? {
             parser.parse().map(Self::Labeled)
         } else {
-            parser.parse().map(Self::Other)
+            match parser.parse() {
+                Ok(other) => Ok(Self::Other(other)),
+                Err(e) => Err(parser.error(format_args!("{e}.
+                    note: if you tried to use a memory instruction, add a @label <label> annotation before it."))),
+            }
         }
     }
 }
@@ -124,5 +137,36 @@ impl<'a> AllInstructions<'a> {
             Self::Labeled(l) => l.instruction.memarg_mut(),
             Self::Other(o) => o.memarg_mut(),
         }
+    }
+}
+
+/// A labeled value type \tau.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LabeledValType<'a> {
+    /// The label for the type
+    pub label: LabelAnnotation<'a>,
+    /// The base value type \in i32, i64, ...
+    pub ty: ValType<'a>,
+}
+
+impl<'a> Parse<'a> for LabeledValType<'a> {
+    fn parse(parser: Parser<'a>) -> parser::Result<Self> {
+        let _guard = parser.register_annotation("label");
+        Ok(Self {
+            label: parser.parse()?,
+            ty: parser.parse()?,
+        })
+    }
+}
+
+impl Encode for LabeledValType<'_> {
+    fn encode(&self, e: &mut Vec<u8>) {
+        self.ty.encode(e)
+    }
+}
+
+impl From<LabeledValType<'_>> for wasm_encoder::ValType {
+    fn from(value: LabeledValType<'_>) -> Self {
+        value.ty.into()
     }
 }

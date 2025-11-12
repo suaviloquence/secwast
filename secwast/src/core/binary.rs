@@ -311,8 +311,8 @@ where
 impl From<&FunctionType<'_>> for wasm_encoder::FuncType {
     fn from(ft: &FunctionType) -> Self {
         wasm_encoder::FuncType::new(
-            ft.params.iter().map(|(_, _, ty)| (*ty).into()),
-            ft.results.iter().map(|ty| (*ty).into()),
+            ft.params.iter().map(|(_, _, ty)| ty.clone().into()),
+            ft.results.iter().map(|ty| ty.clone().into()),
         )
     }
 }
@@ -328,7 +328,7 @@ impl From<&StructType<'_>> for wasm_encoder::StructType {
 impl From<&StructField<'_>> for wasm_encoder::FieldType {
     fn from(f: &StructField) -> wasm_encoder::FieldType {
         wasm_encoder::FieldType {
-            element_type: f.ty.into(),
+            element_type: f.ty.clone().into(),
             mutable: f.mutable,
         }
     }
@@ -337,7 +337,7 @@ impl From<&StructField<'_>> for wasm_encoder::FieldType {
 impl From<&ArrayType<'_>> for wasm_encoder::ArrayType {
     fn from(at: &ArrayType) -> Self {
         let field = wasm_encoder::FieldType {
-            element_type: at.ty.into(),
+            element_type: at.ty.clone().into(),
             mutable: at.mutable,
         };
         wasm_encoder::ArrayType(field)
@@ -467,7 +467,7 @@ impl From<StorageType<'_>> for wasm_encoder::StorageType {
         match st {
             StorageType::I8 => I8,
             StorageType::I16 => I16,
-            StorageType::Val(vt) => Val(vt.into()),
+            StorageType::Val(vt) => Val(vt.ty.into()),
         }
     }
 }
@@ -527,7 +527,7 @@ impl MemoryType {
 impl GlobalType<'_> {
     fn to_global_type(&self) -> wasm_encoder::GlobalType {
         wasm_encoder::GlobalType {
-            val_type: self.ty.into(),
+            val_type: self.ty.ty.into(),
             mutable: self.mutable,
             shared: self.shared,
         }
@@ -746,7 +746,7 @@ impl Func<'_> {
         // prefixed with their length. The temporary vector, when encoded,
         // encodes its length first then the body.
         let mut func =
-            wasm_encoder::Function::new_with_locals_types(locals.iter().map(|t| t.ty.into()));
+            wasm_encoder::Function::new_with_locals_types(locals.iter().map(|t| t.ty.ty.into()));
         let branch_hints = expr.encode(&mut func, dwarf.as_deref_mut());
         let func_size = func.byte_len();
         section.function(&func);

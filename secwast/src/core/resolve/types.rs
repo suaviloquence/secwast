@@ -240,13 +240,13 @@ pub(crate) trait TypeKey<'a> {
     fn insert(&self, cx: &mut Expander<'a>, id: Index<'a>);
 }
 
-pub(crate) type FuncKey<'a> = (Box<[ValType<'a>]>, Box<[ValType<'a>]>);
+pub(crate) type FuncKey<'a> = (Box<[LabeledValType<'a>]>, Box<[LabeledValType<'a>]>);
 
 impl<'a> TypeReference<'a> for FunctionType<'a> {
     type Key = FuncKey<'a>;
 
     fn key(&self) -> Self::Key {
-        let params = self.params.iter().map(|p| p.2).collect();
+        let params = self.params.iter().map(|p| p.2.clone()).collect();
         let results = self.results.clone();
         (params, results)
     }
@@ -262,7 +262,7 @@ impl<'a> TypeKey<'a> for FuncKey<'a> {
     fn to_def(&self, _span: Span, shared: bool) -> TypeDef<'a> {
         TypeDef {
             kind: InnerTypeKind::Func(FunctionType {
-                params: self.0.iter().map(|t| (None, None, *t)).collect(),
+                params: self.0.iter().map(|t| (None, None, t.clone())).collect(),
                 results: self.1.clone(),
             }),
             shared,

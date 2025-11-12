@@ -20,6 +20,7 @@ pub use self::expr::*;
 pub use self::func::*;
 pub use self::global::*;
 pub use self::import::*;
+pub use self::labels::*;
 pub use self::memory::*;
 pub use self::module::*;
 pub use self::table::*;

@@ -1,3 +1,5 @@
+use crate::core::labels::LabelAnnotation;
+use crate::core::labels::LabeledValType;
 use crate::core::*;
 use crate::kw;
 use crate::parser::{Parse, Parser, Result};
@@ -18,6 +20,8 @@ pub struct Func<'a> {
     /// If present, inline export annotations which indicate names this
     /// definition should be exported under.
     pub exports: InlineExport<'a>,
+    /// The program counter label
+    pub pc: LabelAnnotation<'a>,
     /// What kind of function this is, be it an inline-defined or imported
     /// function.
     pub kind: FuncKind<'a>,
@@ -52,6 +56,8 @@ impl<'a> Parse<'a> for Func<'a> {
         let name = parser.parse()?;
         let exports = parser.parse()?;
 
+        let pc = parser.parse()?;
+
         let (ty, kind) = if let Some(import) = parser.parse()? {
             (parser.parse()?, FuncKind::Import(import))
         } else {
@@ -71,6 +77,7 @@ impl<'a> Parse<'a> for Func<'a> {
             id,
             name,
             exports,
+            pc,
             ty,
             kind,
         })
@@ -89,7 +96,7 @@ pub struct Local<'a> {
     /// An optional name for this local stored in the custom `name` section.
     pub name: Option<NameAnnotation<'a>>,
     /// The value type of this local.
-    pub ty: ValType<'a>,
+    pub ty: LabeledValType<'a>,
 }
 
 /// Parser for `local` instruction.
