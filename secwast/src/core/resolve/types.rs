@@ -1,3 +1,4 @@
+use crate::core::labels::AllInstructions;
 use crate::core::*;
 use crate::gensym;
 use crate::token::{Index, Span};
@@ -135,49 +136,51 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_instr(&mut self, instr: &mut Instruction<'a>) {
-        match instr {
-            Instruction::Block(bt)
-            | Instruction::If(bt)
-            | Instruction::Loop(bt)
-            | Instruction::Try(bt)
-            | Instruction::TryTable(TryTable { block: bt, .. }) => {
-                // No expansion necessary, a type reference is already here.
-                // We'll verify that it's the same as the inline type, if any,
-                // later.
-                if bt.ty.index.is_some() {
-                    return;
-                }
+    fn expand_instr(&mut self, instr: &mut AllInstructions<'a>) {
+        if let AllInstructions::Other(instr) = instr {
+            match instr {
+                Instruction::Block(bt)
+                | Instruction::If(bt)
+                | Instruction::Loop(bt)
+                | Instruction::Try(bt)
+                | Instruction::TryTable(TryTable { block: bt, .. }) => {
+                    // No expansion necessary, a type reference is already here.
+                    // We'll verify that it's the same as the inline type, if any,
+                    // later.
+                    if bt.ty.index.is_some() {
+                        return;
+                    }
 
-                match &bt.ty.inline {
-                    // Only actually expand `TypeUse` with an index which appends a
-                    // type if it looks like we need one. This way if the
-                    // multi-value proposal isn't enabled and/or used we won't
-                    // encode it.
-                    Some(inline) => {
-                        if inline.params.len() == 0 && inline.results.len() <= 1 {
+                    match &bt.ty.inline {
+                        // Only actually expand `TypeUse` with an index which appends a
+                        // type if it looks like we need one. This way if the
+                        // multi-value proposal isn't enabled and/or used we won't
+                        // encode it.
+                        Some(inline) => {
+                            if inline.params.len() == 0 && inline.results.len() <= 1 {
+                                return;
+                            }
+                        }
+
+                        // If we didn't have either an index or an inline type
+                        // listed then assume our block has no inputs/outputs, so
+                        // fill in the inline type here.
+                        //
+                        // Do not fall through to expanding the `TypeUse` because
+                        // this doesn't force an empty function type to go into the
+                        // type section.
+                        None => {
+                            bt.ty.inline = Some(FunctionType::default());
                             return;
                         }
                     }
-
-                    // If we didn't have either an index or an inline type
-                    // listed then assume our block has no inputs/outputs, so
-                    // fill in the inline type here.
-                    //
-                    // Do not fall through to expanding the `TypeUse` because
-                    // this doesn't force an empty function type to go into the
-                    // type section.
-                    None => {
-                        bt.ty.inline = Some(FunctionType::default());
-                        return;
-                    }
+                    self.expand_type_use(&mut bt.ty);
                 }
-                self.expand_type_use(&mut bt.ty);
+                Instruction::CallIndirect(c) | Instruction::ReturnCallIndirect(c) => {
+                    self.expand_type_use(&mut c.ty);
+                }
+                _ => {}
             }
-            Instruction::CallIndirect(c) | Instruction::ReturnCallIndirect(c) => {
-                self.expand_type_use(&mut c.ty);
-            }
-            _ => {}
         }
     }
 

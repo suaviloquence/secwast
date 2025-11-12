@@ -6,6 +6,7 @@ mod expr;
 mod func;
 mod global;
 mod import;
+mod labels;
 mod memory;
 mod module;
 mod table;

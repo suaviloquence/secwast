@@ -1,6 +1,6 @@
 use crate::annotation;
+use crate::core::labels::AllInstructions;
 use crate::core::*;
-use crate::encode::Encode;
 use crate::kw;
 use crate::lexer::{Lexer, Token, TokenKind};
 use crate::parser::{Parse, Parser, Result};
@@ -16,7 +16,7 @@ use std::mem;
 #[allow(missing_docs)]
 pub struct Expression<'a> {
     /// Instructions in this expression.
-    pub instrs: Box<[Instruction<'a>]>,
+    pub instrs: Box<[AllInstructions<'a>]>,
 
     /// Branch hints, if any, found while parsing instructions.
     pub branch_hints: Box<[BranchHint]>,
@@ -60,12 +60,17 @@ impl<'a> Parse<'a> for Expression<'a> {
 
 impl<'a> Expression<'a> {
     /// Creates an expression from the single `instr` specified.
-    pub fn one(instr: Instruction<'a>) -> Expression<'a> {
+    pub fn one(instr: AllInstructions<'a>) -> Expression<'a> {
         Expression {
             instrs: [instr].into(),
             branch_hints: Box::new([]),
             instr_spans: None,
         }
+    }
+
+    /// Helper to create an expression from a single [`Instruction`]
+    pub fn one_other(instr: Instruction<'a>) -> Self {
+        Self::one(AllInstructions::Other(instr))
     }
 
     /// Parse an expression formed from a single folded instruction.
@@ -106,7 +111,7 @@ struct ExpressionParser<'a> {
     ///
     /// Appended to with `push_instr` to ensure that this is the same length of
     /// `spans` if `spans` is used.
-    raw_instrs: Vec<Instruction<'a>>,
+    raw_instrs: Vec<AllInstructions<'a>>,
 
     /// Descriptor of all our nested s-expr blocks. This only happens when
     /// instructions themselves are nested.
@@ -132,7 +137,7 @@ enum Paren {
 enum Level<'a> {
     /// This is a normal `block` or `loop` or similar, where the instruction
     /// payload here is pushed when the block is exited.
-    EndWith(Instruction<'a>, Option<Span>),
+    EndWith(AllInstructions<'a>, Option<Span>),
 
     /// This is a pretty special variant which means that we're parsing an `if`
     /// statement, and the state of the `if` parsing is tracked internally in
@@ -154,7 +159,7 @@ enum If<'a> {
     /// clause, if any, of the `if` instruction.
     ///
     /// This parse ends when `(then ...)` is encountered.
-    Clause(Instruction<'a>, Span),
+    Clause(AllInstructions<'a>, Span),
     /// Currently parsing the `then` block, and afterwards a closing paren is
     /// required or an `(else ...)` expression.
     Then,
@@ -226,23 +231,27 @@ impl<'a> ExpressionParser<'a> {
                         continue;
                     }
 
+                    use AllInstructions::Other as O;
+
                     let span = parser.cur_span();
                     match parser.parse()? {
                         // If block/loop show up then we just need to be sure to
                         // push an `end` instruction whenever the `)` token is
                         // seen
-                        i @ Instruction::Block(_)
-                        | i @ Instruction::Loop(_)
-                        | i @ Instruction::TryTable(_) => {
+                        i @ O(Instruction::Block(_))
+                        | i @ O(Instruction::Loop(_))
+                        | i @ O(Instruction::TryTable(_)) => {
                             self.push_instr(i, span);
-                            self.stack
-                                .push(Level::EndWith(Instruction::End(None), None));
+                            self.stack.push(Level::EndWith(
+                                AllInstructions::Other(Instruction::End(None)),
+                                None,
+                            ));
                         }
 
                         // Parsing an `if` instruction is super tricky, so we
                         // push an `If` scope and we let all our scope-based
                         // parsing handle the remaining items.
-                        i @ Instruction::If(_) => {
+                        i @ O(Instruction::If(_)) => {
                             self.stack.push(Level::If(If::Clause(i, span)));
                         }
 
@@ -269,7 +278,7 @@ impl<'a> ExpressionParser<'a> {
                         return Err(parser.error("previous `if` had no `then`"));
                     }
                     Level::If(_) => {
-                        self.push_instr(Instruction::End(None), span);
+                        self.push_instr(AllInstructions::Other(Instruction::End(None)), span);
                     }
                 },
             }
@@ -348,7 +357,7 @@ impl<'a> ExpressionParser<'a> {
                     return Ok(false);
                 }
                 parser.parse::<kw::then>()?;
-                let instr = mem::replace(if_instr, Instruction::End(None));
+                let instr = mem::replace(if_instr, AllInstructions::Other(Instruction::End(None)));
                 let span = *if_instr_span;
                 *i = If::Then;
                 self.push_instr(instr, span);
@@ -361,7 +370,7 @@ impl<'a> ExpressionParser<'a> {
             If::Then => {
                 let span = parser.parse::<kw::r#else>()?.0;
                 *i = If::Else;
-                self.push_instr(Instruction::Else(None), span);
+                self.push_instr(AllInstructions::Other(Instruction::Else(None)), span);
                 self.stack.push(Level::IfArm);
                 Ok(true)
             }
@@ -390,7 +399,7 @@ impl<'a> ExpressionParser<'a> {
         Ok(())
     }
 
-    fn push_instr(&mut self, instr: Instruction<'a>, span: Span) {
+    fn push_instr(&mut self, instr: AllInstructions<'a>, span: Span) {
         self.raw_instrs.push(instr);
         if let Some(spans) = &mut self.spans {
             spans.push(span);
@@ -413,17 +422,17 @@ macro_rules! instructions {
         pub enum Instruction<'a> {
             $(
                 $(#[$doc])*
-                $name $(( instructions!(@ty $($arg)*) ))?,
+                $name $(( $crate::core::instructions!(@ty $($arg)*) ))?,
             )*
         }
 
         #[allow(non_snake_case)]
-        impl<'a> Parse<'a> for Instruction<'a> {
-            fn parse(parser: Parser<'a>) -> Result<Self> {
+        impl<'a> $crate::parser::Parse<'a> for Instruction<'a> {
+            fn parse(parser: $crate::parser::Parser<'a>) -> $crate::parser::Result<Self> {
                 $(
-                    fn $name<'a>(_parser: Parser<'a>) -> Result<Instruction<'a>> {
+                    fn $name<'a>(_parser: $crate::parser::Parser<'a>) -> $crate::parser::Result<Instruction<'a>> {
                         Ok(Instruction::$name $((
-                            instructions!(@parse _parser $($arg)*)?
+                            $crate::core::instructions!(@parse _parser $($arg)*)?
                         ))?)
                     }
                 )*
@@ -441,17 +450,17 @@ macro_rules! instructions {
             }
         }
 
-        impl Encode for Instruction<'_> {
+        impl $crate::encode::Encode for Instruction<'_> {
             #[allow(non_snake_case, unused_lifetimes)]
             fn encode(&self, v: &mut Vec<u8>) {
                 match self {
                     $(
-                        Instruction::$name $((instructions!(@first x $($arg)*)))? => {
-                            fn encode<'a>($(arg: &instructions!(@ty $($arg)*),)? v: &mut Vec<u8>) {
-                                instructions!(@encode v $($binary)*);
-                                $(<instructions!(@ty $($arg)*) as Encode>::encode(arg, v);)?
+                        Instruction::$name $(($crate::core::instructions!(@first x $($arg)*)))? => {
+                            fn encode<'a>($(arg: &$crate::core::instructions!(@ty $($arg)*),)? v: &mut Vec<u8>) {
+                                $crate::core::instructions!(@encode v $($binary)*);
+                                $(<$crate::core::instructions!(@ty $($arg)*) as $crate::encode::Encode>::encode(arg, v);)?
                             }
-                            encode($( instructions!(@first x $($arg)*), )? v)
+                            encode($( $crate::core::instructions!(@first x $($arg)*), )? v)
                         }
                     )*
                 }
@@ -462,11 +471,11 @@ macro_rules! instructions {
             /// Returns the associated [`MemArg`] if one is available for this
             /// instruction.
             #[allow(unused_variables, non_snake_case)]
-            pub fn memarg_mut(&mut self) -> Option<&mut MemArg<'a>> {
+            pub fn memarg_mut(&mut self) -> Option<&mut $crate::core::MemArg<'a>> {
                 match self {
                     $(
-                        Instruction::$name $((instructions!(@memarg_binding a $($arg)*)))? => {
-                            instructions!(@get_memarg a $($($arg)*)?)
+                        Instruction::$name $(($crate::core::instructions!(@memarg_binding a $($arg)*)))? => {
+                            $crate::core::instructions!(@get_memarg a $($($arg)*)?)
                         }
                     )*
                 }
@@ -474,13 +483,12 @@ macro_rules! instructions {
         }
     );
 
-    (@ty MemArg<$amt:tt>) => (MemArg<'a>);
-    (@ty LoadOrStoreLane<$amt:tt>) => (LoadOrStoreLane<'a>);
+    (@ty MemArg<$amt:tt>) => ($crate::core::MemArg<'a>);
     (@ty $other:ty) => ($other);
 
     (@first $first:ident $($t:tt)*) => ($first);
 
-    (@parse $parser:ident MemArg<$amt:tt>) => (MemArg::parse($parser, $amt));
+    (@parse $parser:ident MemArg<$amt:tt>) => ($crate::core::MemArg::parse($parser, $amt));
     (@parse $parser:ident MemArg) => (compile_error!("must specify `MemArg` default"));
     (@parse $parser:ident LoadOrStoreLane<$amt:tt>) => (LoadOrStoreLane::parse($parser, $amt));
     (@parse $parser:ident LoadOrStoreLane) => (compile_error!("must specify `LoadOrStoreLane` default"));
@@ -501,6 +509,8 @@ macro_rules! instructions {
     (@memarg_binding $name:ident LoadOrStoreLane<$amt:tt>) => ($name);
     (@memarg_binding $name:ident $other:ty) => (_);
 }
+
+pub(super) use instructions;
 
 instructions! {
     pub enum Instruction<'a> {
@@ -538,29 +548,6 @@ instructions! {
         TableGet(TableArg<'a>) : [0x25] : "table.get",
         TableSet(TableArg<'a>) : [0x26] : "table.set",
 
-        I32Load(MemArg<4>) : [0x28] : "i32.load",
-        I64Load(MemArg<8>) : [0x29] : "i64.load",
-        F32Load(MemArg<4>) : [0x2a] : "f32.load",
-        F64Load(MemArg<8>) : [0x2b] : "f64.load",
-        I32Load8s(MemArg<1>) : [0x2c] : "i32.load8_s",
-        I32Load8u(MemArg<1>) : [0x2d] : "i32.load8_u",
-        I32Load16s(MemArg<2>) : [0x2e] : "i32.load16_s",
-        I32Load16u(MemArg<2>) : [0x2f] : "i32.load16_u",
-        I64Load8s(MemArg<1>) : [0x30] : "i64.load8_s",
-        I64Load8u(MemArg<1>) : [0x31] : "i64.load8_u",
-        I64Load16s(MemArg<2>) : [0x32] : "i64.load16_s",
-        I64Load16u(MemArg<2>) : [0x33] : "i64.load16_u",
-        I64Load32s(MemArg<4>) : [0x34] : "i64.load32_s",
-        I64Load32u(MemArg<4>) : [0x35] : "i64.load32_u",
-        I32Store(MemArg<4>) : [0x36] : "i32.store",
-        I64Store(MemArg<8>) : [0x37] : "i64.store",
-        F32Store(MemArg<4>) : [0x38] : "f32.store",
-        F64Store(MemArg<8>) : [0x39] : "f64.store",
-        I32Store8(MemArg<1>) : [0x3a] : "i32.store8",
-        I32Store16(MemArg<2>) : [0x3b] : "i32.store16",
-        I64Store8(MemArg<1>) : [0x3c] : "i64.store8",
-        I64Store16(MemArg<2>) : [0x3d] : "i64.store16",
-        I64Store32(MemArg<4>) : [0x3e] : "i64.store32",
 
         // Lots of bulk memory proposal here as well
         MemorySize(MemoryArg<'a>) : [0x3f] : "memory.size",
@@ -585,48 +572,12 @@ instructions! {
         RefAsNonNull : [0xd4] : "ref.as_non_null",
         BrOnNull(Index<'a>) : [0xd5] : "br_on_null",
         BrOnNonNull(Index<'a>) : [0xd6] : "br_on_non_null",
-
-        // gc proposal: eqref
-        RefEq : [0xd3] : "ref.eq",
-
-        // gc proposal: struct
-        StructNew(Index<'a>) : [0xfb, 0x00] : "struct.new",
-        StructNewDefault(Index<'a>) : [0xfb, 0x01] : "struct.new_default",
-        StructGet(StructAccess<'a>) : [0xfb, 0x02] : "struct.get",
-        StructGetS(StructAccess<'a>) : [0xfb, 0x03] : "struct.get_s",
-        StructGetU(StructAccess<'a>) : [0xfb, 0x04] : "struct.get_u",
-        StructSet(StructAccess<'a>) : [0xfb, 0x05] : "struct.set",
-
-        // gc proposal: array
-        ArrayNew(Index<'a>) : [0xfb, 0x06] : "array.new",
-        ArrayNewDefault(Index<'a>) : [0xfb, 0x07] : "array.new_default",
-        ArrayNewFixed(ArrayNewFixed<'a>) : [0xfb, 0x08] : "array.new_fixed",
-        ArrayNewData(ArrayNewData<'a>) : [0xfb, 0x09] : "array.new_data",
-        ArrayNewElem(ArrayNewElem<'a>) : [0xfb, 0x0a] : "array.new_elem",
-        ArrayGet(Index<'a>) : [0xfb, 0x0b] : "array.get",
-        ArrayGetS(Index<'a>) : [0xfb, 0x0c] : "array.get_s",
-        ArrayGetU(Index<'a>) : [0xfb, 0x0d] : "array.get_u",
-        ArraySet(Index<'a>) : [0xfb, 0x0e] : "array.set",
-        ArrayLen : [0xfb, 0x0f] : "array.len",
-        ArrayFill(ArrayFill<'a>) : [0xfb, 0x10] : "array.fill",
-        ArrayCopy(ArrayCopy<'a>) : [0xfb, 0x11] : "array.copy",
-        ArrayInitData(ArrayInit<'a>) : [0xfb, 0x12] : "array.init_data",
-        ArrayInitElem(ArrayInit<'a>) : [0xfb, 0x13] : "array.init_elem",
-
-        // gc proposal, i31
-        RefI31 : [0xfb, 0x1c] : "ref.i31",
-        I31GetS : [0xfb, 0x1d] : "i31.get_s",
-        I31GetU : [0xfb, 0x1e] : "i31.get_u",
-
-        // gc proposal, concrete casting
-        RefTest(RefTest<'a>) : [] : "ref.test",
-        RefCast(RefCast<'a>) : [] : "ref.cast",
-        BrOnCast(Box<BrOnCast<'a>>) : [] : "br_on_cast",
-        BrOnCastFail(Box<BrOnCastFail<'a>>) : [] : "br_on_cast_fail",
-
-        // gc proposal extern/any coercion operations
-        AnyConvertExtern : [0xfb, 0x1a] : "any.convert_extern",
-        ExternConvertAny : [0xfb, 0x1b] : "extern.convert_any",
+        // removed: gc proposal: eqref
+        // removed: gc proposal: struct
+        // removed: gc proposal: array
+        // removed: gc proposal, i31
+        // removed: gc proposal, concrete casting
+        // removed: gc proposal extern/any coercion operations
 
         I32Const(i32) : [0x41] : "i32.const",
         I64Const(i64) : [0x42] : "i64.const",
@@ -782,379 +733,9 @@ instructions! {
         I64Extend16S : [0xc3] : "i64.extend16_s",
         I64Extend32S : [0xc4] : "i64.extend32_s",
 
-        // atomics proposal
-        MemoryAtomicNotify(MemArg<4>) : [0xfe, 0x00] : "memory.atomic.notify",
-        MemoryAtomicWait32(MemArg<4>) : [0xfe, 0x01] : "memory.atomic.wait32",
-        MemoryAtomicWait64(MemArg<8>) : [0xfe, 0x02] : "memory.atomic.wait64",
-        AtomicFence : [0xfe, 0x03, 0x00] : "atomic.fence",
-
-        I32AtomicLoad(MemArg<4>) : [0xfe, 0x10] : "i32.atomic.load",
-        I64AtomicLoad(MemArg<8>) : [0xfe, 0x11] : "i64.atomic.load",
-        I32AtomicLoad8u(MemArg<1>) : [0xfe, 0x12] : "i32.atomic.load8_u",
-        I32AtomicLoad16u(MemArg<2>) : [0xfe, 0x13] : "i32.atomic.load16_u",
-        I64AtomicLoad8u(MemArg<1>) : [0xfe, 0x14] : "i64.atomic.load8_u",
-        I64AtomicLoad16u(MemArg<2>) : [0xfe, 0x15] : "i64.atomic.load16_u",
-        I64AtomicLoad32u(MemArg<4>) : [0xfe, 0x16] : "i64.atomic.load32_u",
-        I32AtomicStore(MemArg<4>) : [0xfe, 0x17] : "i32.atomic.store",
-        I64AtomicStore(MemArg<8>) : [0xfe, 0x18] : "i64.atomic.store",
-        I32AtomicStore8(MemArg<1>) : [0xfe, 0x19] : "i32.atomic.store8",
-        I32AtomicStore16(MemArg<2>) : [0xfe, 0x1a] : "i32.atomic.store16",
-        I64AtomicStore8(MemArg<1>) : [0xfe, 0x1b] : "i64.atomic.store8",
-        I64AtomicStore16(MemArg<2>) : [0xfe, 0x1c] : "i64.atomic.store16",
-        I64AtomicStore32(MemArg<4>) : [0xfe, 0x1d] : "i64.atomic.store32",
-
-        I32AtomicRmwAdd(MemArg<4>) : [0xfe, 0x1e] : "i32.atomic.rmw.add",
-        I64AtomicRmwAdd(MemArg<8>) : [0xfe, 0x1f] : "i64.atomic.rmw.add",
-        I32AtomicRmw8AddU(MemArg<1>) : [0xfe, 0x20] : "i32.atomic.rmw8.add_u",
-        I32AtomicRmw16AddU(MemArg<2>) : [0xfe, 0x21] : "i32.atomic.rmw16.add_u",
-        I64AtomicRmw8AddU(MemArg<1>) : [0xfe, 0x22] : "i64.atomic.rmw8.add_u",
-        I64AtomicRmw16AddU(MemArg<2>) : [0xfe, 0x23] : "i64.atomic.rmw16.add_u",
-        I64AtomicRmw32AddU(MemArg<4>) : [0xfe, 0x24] : "i64.atomic.rmw32.add_u",
-
-        I32AtomicRmwSub(MemArg<4>) : [0xfe, 0x25] : "i32.atomic.rmw.sub",
-        I64AtomicRmwSub(MemArg<8>) : [0xfe, 0x26] : "i64.atomic.rmw.sub",
-        I32AtomicRmw8SubU(MemArg<1>) : [0xfe, 0x27] : "i32.atomic.rmw8.sub_u",
-        I32AtomicRmw16SubU(MemArg<2>) : [0xfe, 0x28] : "i32.atomic.rmw16.sub_u",
-        I64AtomicRmw8SubU(MemArg<1>) : [0xfe, 0x29] : "i64.atomic.rmw8.sub_u",
-        I64AtomicRmw16SubU(MemArg<2>) : [0xfe, 0x2a] : "i64.atomic.rmw16.sub_u",
-        I64AtomicRmw32SubU(MemArg<4>) : [0xfe, 0x2b] : "i64.atomic.rmw32.sub_u",
-
-        I32AtomicRmwAnd(MemArg<4>) : [0xfe, 0x2c] : "i32.atomic.rmw.and",
-        I64AtomicRmwAnd(MemArg<8>) : [0xfe, 0x2d] : "i64.atomic.rmw.and",
-        I32AtomicRmw8AndU(MemArg<1>) : [0xfe, 0x2e] : "i32.atomic.rmw8.and_u",
-        I32AtomicRmw16AndU(MemArg<2>) : [0xfe, 0x2f] : "i32.atomic.rmw16.and_u",
-        I64AtomicRmw8AndU(MemArg<1>) : [0xfe, 0x30] : "i64.atomic.rmw8.and_u",
-        I64AtomicRmw16AndU(MemArg<2>) : [0xfe, 0x31] : "i64.atomic.rmw16.and_u",
-        I64AtomicRmw32AndU(MemArg<4>) : [0xfe, 0x32] : "i64.atomic.rmw32.and_u",
-
-        I32AtomicRmwOr(MemArg<4>) : [0xfe, 0x33] : "i32.atomic.rmw.or",
-        I64AtomicRmwOr(MemArg<8>) : [0xfe, 0x34] : "i64.atomic.rmw.or",
-        I32AtomicRmw8OrU(MemArg<1>) : [0xfe, 0x35] : "i32.atomic.rmw8.or_u",
-        I32AtomicRmw16OrU(MemArg<2>) : [0xfe, 0x36] : "i32.atomic.rmw16.or_u",
-        I64AtomicRmw8OrU(MemArg<1>) : [0xfe, 0x37] : "i64.atomic.rmw8.or_u",
-        I64AtomicRmw16OrU(MemArg<2>) : [0xfe, 0x38] : "i64.atomic.rmw16.or_u",
-        I64AtomicRmw32OrU(MemArg<4>) : [0xfe, 0x39] : "i64.atomic.rmw32.or_u",
-
-        I32AtomicRmwXor(MemArg<4>) : [0xfe, 0x3a] : "i32.atomic.rmw.xor",
-        I64AtomicRmwXor(MemArg<8>) : [0xfe, 0x3b] : "i64.atomic.rmw.xor",
-        I32AtomicRmw8XorU(MemArg<1>) : [0xfe, 0x3c] : "i32.atomic.rmw8.xor_u",
-        I32AtomicRmw16XorU(MemArg<2>) : [0xfe, 0x3d] : "i32.atomic.rmw16.xor_u",
-        I64AtomicRmw8XorU(MemArg<1>) : [0xfe, 0x3e] : "i64.atomic.rmw8.xor_u",
-        I64AtomicRmw16XorU(MemArg<2>) : [0xfe, 0x3f] : "i64.atomic.rmw16.xor_u",
-        I64AtomicRmw32XorU(MemArg<4>) : [0xfe, 0x40] : "i64.atomic.rmw32.xor_u",
-
-        I32AtomicRmwXchg(MemArg<4>) : [0xfe, 0x41] : "i32.atomic.rmw.xchg",
-        I64AtomicRmwXchg(MemArg<8>) : [0xfe, 0x42] : "i64.atomic.rmw.xchg",
-        I32AtomicRmw8XchgU(MemArg<1>) : [0xfe, 0x43] : "i32.atomic.rmw8.xchg_u",
-        I32AtomicRmw16XchgU(MemArg<2>) : [0xfe, 0x44] : "i32.atomic.rmw16.xchg_u",
-        I64AtomicRmw8XchgU(MemArg<1>) : [0xfe, 0x45] : "i64.atomic.rmw8.xchg_u",
-        I64AtomicRmw16XchgU(MemArg<2>) : [0xfe, 0x46] : "i64.atomic.rmw16.xchg_u",
-        I64AtomicRmw32XchgU(MemArg<4>) : [0xfe, 0x47] : "i64.atomic.rmw32.xchg_u",
-
-        I32AtomicRmwCmpxchg(MemArg<4>) : [0xfe, 0x48] : "i32.atomic.rmw.cmpxchg",
-        I64AtomicRmwCmpxchg(MemArg<8>) : [0xfe, 0x49] : "i64.atomic.rmw.cmpxchg",
-        I32AtomicRmw8CmpxchgU(MemArg<1>) : [0xfe, 0x4a] : "i32.atomic.rmw8.cmpxchg_u",
-        I32AtomicRmw16CmpxchgU(MemArg<2>) : [0xfe, 0x4b] : "i32.atomic.rmw16.cmpxchg_u",
-        I64AtomicRmw8CmpxchgU(MemArg<1>) : [0xfe, 0x4c] : "i64.atomic.rmw8.cmpxchg_u",
-        I64AtomicRmw16CmpxchgU(MemArg<2>) : [0xfe, 0x4d] : "i64.atomic.rmw16.cmpxchg_u",
-        I64AtomicRmw32CmpxchgU(MemArg<4>) : [0xfe, 0x4e] : "i64.atomic.rmw32.cmpxchg_u",
-
-        // proposal: shared-everything-threads
-        GlobalAtomicGet(Ordered<Index<'a>>) : [0xfe, 0x4f] : "global.atomic.get",
-        GlobalAtomicSet(Ordered<Index<'a>>) : [0xfe, 0x50] : "global.atomic.set",
-        GlobalAtomicRmwAdd(Ordered<Index<'a>>) : [0xfe, 0x51] : "global.atomic.rmw.add",
-        GlobalAtomicRmwSub(Ordered<Index<'a>>) : [0xfe, 0x52] : "global.atomic.rmw.sub",
-        GlobalAtomicRmwAnd(Ordered<Index<'a>>) : [0xfe, 0x53] : "global.atomic.rmw.and",
-        GlobalAtomicRmwOr(Ordered<Index<'a>>) : [0xfe, 0x54] : "global.atomic.rmw.or",
-        GlobalAtomicRmwXor(Ordered<Index<'a>>) : [0xfe, 0x55] : "global.atomic.rmw.xor",
-        GlobalAtomicRmwXchg(Ordered<Index<'a>>) : [0xfe, 0x56] : "global.atomic.rmw.xchg",
-        GlobalAtomicRmwCmpxchg(Ordered<Index<'a>>) : [0xfe, 0x57] : "global.atomic.rmw.cmpxchg",
-        TableAtomicGet(Ordered<TableArg<'a>>) : [0xfe, 0x58] : "table.atomic.get",
-        TableAtomicSet(Ordered<TableArg<'a>>) : [0xfe, 0x59] : "table.atomic.set",
-        TableAtomicRmwXchg(Ordered<TableArg<'a>>) : [0xfe, 0x5a] : "table.atomic.rmw.xchg",
-        TableAtomicRmwCmpxchg(Ordered<TableArg<'a>>) : [0xfe, 0x5b] : "table.atomic.rmw.cmpxchg",
-        StructAtomicGet(Ordered<StructAccess<'a>>) : [0xfe, 0x5c] : "struct.atomic.get",
-        StructAtomicGetS(Ordered<StructAccess<'a>>) : [0xfe, 0x5d] : "struct.atomic.get_s",
-        StructAtomicGetU(Ordered<StructAccess<'a>>) : [0xfe, 0x5e] : "struct.atomic.get_u",
-        StructAtomicSet(Ordered<StructAccess<'a>>) : [0xfe, 0x5f] : "struct.atomic.set",
-        StructAtomicRmwAdd(Ordered<StructAccess<'a>>) : [0xfe, 0x60] : "struct.atomic.rmw.add",
-        StructAtomicRmwSub(Ordered<StructAccess<'a>>) : [0xfe, 0x61] : "struct.atomic.rmw.sub",
-        StructAtomicRmwAnd(Ordered<StructAccess<'a>>) : [0xfe, 0x62] : "struct.atomic.rmw.and",
-        StructAtomicRmwOr(Ordered<StructAccess<'a>>) : [0xfe, 0x63] : "struct.atomic.rmw.or",
-        StructAtomicRmwXor(Ordered<StructAccess<'a>>) : [0xfe, 0x64] : "struct.atomic.rmw.xor",
-        StructAtomicRmwXchg(Ordered<StructAccess<'a>>) : [0xfe, 0x65] : "struct.atomic.rmw.xchg",
-        StructAtomicRmwCmpxchg(Ordered<StructAccess<'a>>) : [0xfe, 0x66] : "struct.atomic.rmw.cmpxchg",
-        ArrayAtomicGet(Ordered<Index<'a>>) : [0xfe, 0x67] : "array.atomic.get",
-        ArrayAtomicGetS(Ordered<Index<'a>>) : [0xfe, 0x68] : "array.atomic.get_s",
-        ArrayAtomicGetU(Ordered<Index<'a>>) : [0xfe, 0x69] : "array.atomic.get_u",
-        ArrayAtomicSet(Ordered<Index<'a>>) : [0xfe, 0x6a] : "array.atomic.set",
-        ArrayAtomicRmwAdd(Ordered<Index<'a>>) : [0xfe, 0x6b] : "array.atomic.rmw.add",
-        ArrayAtomicRmwSub(Ordered<Index<'a>>) : [0xfe, 0x6c] : "array.atomic.rmw.sub",
-        ArrayAtomicRmwAnd(Ordered<Index<'a>>) : [0xfe, 0x6d] : "array.atomic.rmw.and",
-        ArrayAtomicRmwOr(Ordered<Index<'a>>) : [0xfe, 0x6e] : "array.atomic.rmw.or",
-        ArrayAtomicRmwXor(Ordered<Index<'a>>) : [0xfe, 0x6f] : "array.atomic.rmw.xor",
-        ArrayAtomicRmwXchg(Ordered<Index<'a>>) : [0xfe, 0x70] : "array.atomic.rmw.xchg",
-        ArrayAtomicRmwCmpxchg(Ordered<Index<'a>>) : [0xfe, 0x71] : "array.atomic.rmw.cmpxchg",
-        RefI31Shared : [0xfe, 0x72] : "ref.i31_shared",
-
-        // proposal: simd
-        //
-        // https://webassembly.github.io/simd/core/binary/instructions.html
-        V128Load(MemArg<16>) : [0xfd, 0] : "v128.load",
-        V128Load8x8S(MemArg<8>) : [0xfd, 1] : "v128.load8x8_s",
-        V128Load8x8U(MemArg<8>) : [0xfd, 2] : "v128.load8x8_u",
-        V128Load16x4S(MemArg<8>) : [0xfd, 3] : "v128.load16x4_s",
-        V128Load16x4U(MemArg<8>) : [0xfd, 4] : "v128.load16x4_u",
-        V128Load32x2S(MemArg<8>) : [0xfd, 5] : "v128.load32x2_s",
-        V128Load32x2U(MemArg<8>) : [0xfd, 6] : "v128.load32x2_u",
-        V128Load8Splat(MemArg<1>) : [0xfd, 7] : "v128.load8_splat",
-        V128Load16Splat(MemArg<2>) : [0xfd, 8] : "v128.load16_splat",
-        V128Load32Splat(MemArg<4>) : [0xfd, 9] : "v128.load32_splat",
-        V128Load64Splat(MemArg<8>) : [0xfd, 10] : "v128.load64_splat",
-        V128Load32Zero(MemArg<4>) : [0xfd, 92] : "v128.load32_zero",
-        V128Load64Zero(MemArg<8>) : [0xfd, 93] : "v128.load64_zero",
-        V128Store(MemArg<16>) : [0xfd, 11] : "v128.store",
-
-        V128Load8Lane(LoadOrStoreLane<1>) : [0xfd, 84] : "v128.load8_lane",
-        V128Load16Lane(LoadOrStoreLane<2>) : [0xfd, 85] : "v128.load16_lane",
-        V128Load32Lane(LoadOrStoreLane<4>) : [0xfd, 86] : "v128.load32_lane",
-        V128Load64Lane(LoadOrStoreLane<8>): [0xfd, 87] : "v128.load64_lane",
-        V128Store8Lane(LoadOrStoreLane<1>) : [0xfd, 88] : "v128.store8_lane",
-        V128Store16Lane(LoadOrStoreLane<2>) : [0xfd, 89] : "v128.store16_lane",
-        V128Store32Lane(LoadOrStoreLane<4>) : [0xfd, 90] : "v128.store32_lane",
-        V128Store64Lane(LoadOrStoreLane<8>) : [0xfd, 91] : "v128.store64_lane",
-
-        V128Const(V128Const) : [0xfd, 12] : "v128.const",
-        I8x16Shuffle(I8x16Shuffle) : [0xfd, 13] : "i8x16.shuffle",
-
-        I8x16ExtractLaneS(LaneArg) : [0xfd, 21] : "i8x16.extract_lane_s",
-        I8x16ExtractLaneU(LaneArg) : [0xfd, 22] : "i8x16.extract_lane_u",
-        I8x16ReplaceLane(LaneArg) : [0xfd, 23] : "i8x16.replace_lane",
-        I16x8ExtractLaneS(LaneArg) : [0xfd, 24] : "i16x8.extract_lane_s",
-        I16x8ExtractLaneU(LaneArg) : [0xfd, 25] : "i16x8.extract_lane_u",
-        I16x8ReplaceLane(LaneArg) : [0xfd, 26] : "i16x8.replace_lane",
-        I32x4ExtractLane(LaneArg) : [0xfd, 27] : "i32x4.extract_lane",
-        I32x4ReplaceLane(LaneArg) : [0xfd, 28] : "i32x4.replace_lane",
-        I64x2ExtractLane(LaneArg) : [0xfd, 29] : "i64x2.extract_lane",
-        I64x2ReplaceLane(LaneArg) : [0xfd, 30] : "i64x2.replace_lane",
-        F32x4ExtractLane(LaneArg) : [0xfd, 31] : "f32x4.extract_lane",
-        F32x4ReplaceLane(LaneArg) : [0xfd, 32] : "f32x4.replace_lane",
-        F64x2ExtractLane(LaneArg) : [0xfd, 33] : "f64x2.extract_lane",
-        F64x2ReplaceLane(LaneArg) : [0xfd, 34] : "f64x2.replace_lane",
-
-        I8x16Swizzle : [0xfd, 14] : "i8x16.swizzle",
-        I8x16Splat : [0xfd, 15] : "i8x16.splat",
-        I16x8Splat : [0xfd, 16] : "i16x8.splat",
-        I32x4Splat : [0xfd, 17] : "i32x4.splat",
-        I64x2Splat : [0xfd, 18] : "i64x2.splat",
-        F32x4Splat : [0xfd, 19] : "f32x4.splat",
-        F64x2Splat : [0xfd, 20] : "f64x2.splat",
-
-        I8x16Eq : [0xfd, 35] : "i8x16.eq",
-        I8x16Ne : [0xfd, 36] : "i8x16.ne",
-        I8x16LtS : [0xfd, 37] : "i8x16.lt_s",
-        I8x16LtU : [0xfd, 38] : "i8x16.lt_u",
-        I8x16GtS : [0xfd, 39] : "i8x16.gt_s",
-        I8x16GtU : [0xfd, 40] : "i8x16.gt_u",
-        I8x16LeS : [0xfd, 41] : "i8x16.le_s",
-        I8x16LeU : [0xfd, 42] : "i8x16.le_u",
-        I8x16GeS : [0xfd, 43] : "i8x16.ge_s",
-        I8x16GeU : [0xfd, 44] : "i8x16.ge_u",
-
-        I16x8Eq : [0xfd, 45] : "i16x8.eq",
-        I16x8Ne : [0xfd, 46] : "i16x8.ne",
-        I16x8LtS : [0xfd, 47] : "i16x8.lt_s",
-        I16x8LtU : [0xfd, 48] : "i16x8.lt_u",
-        I16x8GtS : [0xfd, 49] : "i16x8.gt_s",
-        I16x8GtU : [0xfd, 50] : "i16x8.gt_u",
-        I16x8LeS : [0xfd, 51] : "i16x8.le_s",
-        I16x8LeU : [0xfd, 52] : "i16x8.le_u",
-        I16x8GeS : [0xfd, 53] : "i16x8.ge_s",
-        I16x8GeU : [0xfd, 54] : "i16x8.ge_u",
-
-        I32x4Eq : [0xfd, 55] : "i32x4.eq",
-        I32x4Ne : [0xfd, 56] : "i32x4.ne",
-        I32x4LtS : [0xfd, 57] : "i32x4.lt_s",
-        I32x4LtU : [0xfd, 58] : "i32x4.lt_u",
-        I32x4GtS : [0xfd, 59] : "i32x4.gt_s",
-        I32x4GtU : [0xfd, 60] : "i32x4.gt_u",
-        I32x4LeS : [0xfd, 61] : "i32x4.le_s",
-        I32x4LeU : [0xfd, 62] : "i32x4.le_u",
-        I32x4GeS : [0xfd, 63] : "i32x4.ge_s",
-        I32x4GeU : [0xfd, 64] : "i32x4.ge_u",
-
-        I64x2Eq : [0xfd, 214] : "i64x2.eq",
-        I64x2Ne : [0xfd, 215] : "i64x2.ne",
-        I64x2LtS : [0xfd, 216] : "i64x2.lt_s",
-        I64x2GtS : [0xfd, 217] : "i64x2.gt_s",
-        I64x2LeS : [0xfd, 218] : "i64x2.le_s",
-        I64x2GeS : [0xfd, 219] : "i64x2.ge_s",
-
-        F32x4Eq : [0xfd, 65] : "f32x4.eq",
-        F32x4Ne : [0xfd, 66] : "f32x4.ne",
-        F32x4Lt : [0xfd, 67] : "f32x4.lt",
-        F32x4Gt : [0xfd, 68] : "f32x4.gt",
-        F32x4Le : [0xfd, 69] : "f32x4.le",
-        F32x4Ge : [0xfd, 70] : "f32x4.ge",
-
-        F64x2Eq : [0xfd, 71] : "f64x2.eq",
-        F64x2Ne : [0xfd, 72] : "f64x2.ne",
-        F64x2Lt : [0xfd, 73] : "f64x2.lt",
-        F64x2Gt : [0xfd, 74] : "f64x2.gt",
-        F64x2Le : [0xfd, 75] : "f64x2.le",
-        F64x2Ge : [0xfd, 76] : "f64x2.ge",
-
-        V128Not : [0xfd, 77] : "v128.not",
-        V128And : [0xfd, 78] : "v128.and",
-        V128Andnot : [0xfd, 79] : "v128.andnot",
-        V128Or : [0xfd, 80] : "v128.or",
-        V128Xor : [0xfd, 81] : "v128.xor",
-        V128Bitselect : [0xfd, 82] : "v128.bitselect",
-        V128AnyTrue : [0xfd, 83] : "v128.any_true",
-
-        I8x16Abs : [0xfd, 96] : "i8x16.abs",
-        I8x16Neg : [0xfd, 97] : "i8x16.neg",
-        I8x16Popcnt : [0xfd, 98] : "i8x16.popcnt",
-        I8x16AllTrue : [0xfd, 99] : "i8x16.all_true",
-        I8x16Bitmask : [0xfd, 100] : "i8x16.bitmask",
-        I8x16NarrowI16x8S : [0xfd, 101] : "i8x16.narrow_i16x8_s",
-        I8x16NarrowI16x8U : [0xfd, 102] : "i8x16.narrow_i16x8_u",
-        I8x16Shl : [0xfd, 107] : "i8x16.shl",
-        I8x16ShrS : [0xfd, 108] : "i8x16.shr_s",
-        I8x16ShrU : [0xfd, 109] : "i8x16.shr_u",
-        I8x16Add : [0xfd, 110] : "i8x16.add",
-        I8x16AddSatS : [0xfd, 111] : "i8x16.add_sat_s",
-        I8x16AddSatU : [0xfd, 112] : "i8x16.add_sat_u",
-        I8x16Sub : [0xfd, 113] : "i8x16.sub",
-        I8x16SubSatS : [0xfd, 114] : "i8x16.sub_sat_s",
-        I8x16SubSatU : [0xfd, 115] : "i8x16.sub_sat_u",
-        I8x16MinS : [0xfd, 118] : "i8x16.min_s",
-        I8x16MinU : [0xfd, 119] : "i8x16.min_u",
-        I8x16MaxS : [0xfd, 120] : "i8x16.max_s",
-        I8x16MaxU : [0xfd, 121] : "i8x16.max_u",
-        I8x16AvgrU : [0xfd, 123] : "i8x16.avgr_u",
-
-        I16x8ExtAddPairwiseI8x16S : [0xfd, 124] : "i16x8.extadd_pairwise_i8x16_s",
-        I16x8ExtAddPairwiseI8x16U : [0xfd, 125] : "i16x8.extadd_pairwise_i8x16_u",
-        I16x8Abs : [0xfd, 128] : "i16x8.abs",
-        I16x8Neg : [0xfd, 129] : "i16x8.neg",
-        I16x8Q15MulrSatS : [0xfd, 130] : "i16x8.q15mulr_sat_s",
-        I16x8AllTrue : [0xfd, 131] : "i16x8.all_true",
-        I16x8Bitmask : [0xfd, 132] : "i16x8.bitmask",
-        I16x8NarrowI32x4S : [0xfd, 133] : "i16x8.narrow_i32x4_s",
-        I16x8NarrowI32x4U : [0xfd, 134] : "i16x8.narrow_i32x4_u",
-        I16x8ExtendLowI8x16S : [0xfd, 135] : "i16x8.extend_low_i8x16_s",
-        I16x8ExtendHighI8x16S : [0xfd, 136] : "i16x8.extend_high_i8x16_s",
-        I16x8ExtendLowI8x16U : [0xfd, 137] : "i16x8.extend_low_i8x16_u",
-        I16x8ExtendHighI8x16u : [0xfd, 138] : "i16x8.extend_high_i8x16_u",
-        I16x8Shl : [0xfd, 139] : "i16x8.shl",
-        I16x8ShrS : [0xfd, 140] : "i16x8.shr_s",
-        I16x8ShrU : [0xfd, 141] : "i16x8.shr_u",
-        I16x8Add : [0xfd, 142] : "i16x8.add",
-        I16x8AddSatS : [0xfd, 143] : "i16x8.add_sat_s",
-        I16x8AddSatU : [0xfd, 144] : "i16x8.add_sat_u",
-        I16x8Sub : [0xfd, 145] : "i16x8.sub",
-        I16x8SubSatS : [0xfd, 146] : "i16x8.sub_sat_s",
-        I16x8SubSatU : [0xfd, 147] : "i16x8.sub_sat_u",
-        I16x8Mul : [0xfd, 149] : "i16x8.mul",
-        I16x8MinS : [0xfd, 150] : "i16x8.min_s",
-        I16x8MinU : [0xfd, 151] : "i16x8.min_u",
-        I16x8MaxS : [0xfd, 152] : "i16x8.max_s",
-        I16x8MaxU : [0xfd, 153] : "i16x8.max_u",
-        I16x8AvgrU : [0xfd, 155] : "i16x8.avgr_u",
-        I16x8ExtMulLowI8x16S : [0xfd, 156] : "i16x8.extmul_low_i8x16_s",
-        I16x8ExtMulHighI8x16S : [0xfd, 157] : "i16x8.extmul_high_i8x16_s",
-        I16x8ExtMulLowI8x16U : [0xfd, 158] : "i16x8.extmul_low_i8x16_u",
-        I16x8ExtMulHighI8x16U : [0xfd, 159] : "i16x8.extmul_high_i8x16_u",
-
-        I32x4ExtAddPairwiseI16x8S : [0xfd, 126] : "i32x4.extadd_pairwise_i16x8_s",
-        I32x4ExtAddPairwiseI16x8U : [0xfd, 127] : "i32x4.extadd_pairwise_i16x8_u",
-        I32x4Abs : [0xfd, 160] : "i32x4.abs",
-        I32x4Neg : [0xfd, 161] : "i32x4.neg",
-        I32x4AllTrue : [0xfd, 163] : "i32x4.all_true",
-        I32x4Bitmask : [0xfd, 164] : "i32x4.bitmask",
-        I32x4ExtendLowI16x8S : [0xfd, 167] : "i32x4.extend_low_i16x8_s",
-        I32x4ExtendHighI16x8S : [0xfd, 168] : "i32x4.extend_high_i16x8_s",
-        I32x4ExtendLowI16x8U : [0xfd, 169] : "i32x4.extend_low_i16x8_u",
-        I32x4ExtendHighI16x8U : [0xfd, 170] : "i32x4.extend_high_i16x8_u",
-        I32x4Shl : [0xfd, 171] : "i32x4.shl",
-        I32x4ShrS : [0xfd, 172] : "i32x4.shr_s",
-        I32x4ShrU : [0xfd, 173] : "i32x4.shr_u",
-        I32x4Add : [0xfd, 174] : "i32x4.add",
-        I32x4Sub : [0xfd, 177] : "i32x4.sub",
-        I32x4Mul : [0xfd, 181] : "i32x4.mul",
-        I32x4MinS : [0xfd, 182] : "i32x4.min_s",
-        I32x4MinU : [0xfd, 183] : "i32x4.min_u",
-        I32x4MaxS : [0xfd, 184] : "i32x4.max_s",
-        I32x4MaxU : [0xfd, 185] : "i32x4.max_u",
-        I32x4DotI16x8S : [0xfd, 186] : "i32x4.dot_i16x8_s",
-        I32x4ExtMulLowI16x8S : [0xfd, 188] : "i32x4.extmul_low_i16x8_s",
-        I32x4ExtMulHighI16x8S : [0xfd, 189] : "i32x4.extmul_high_i16x8_s",
-        I32x4ExtMulLowI16x8U : [0xfd, 190] : "i32x4.extmul_low_i16x8_u",
-        I32x4ExtMulHighI16x8U : [0xfd, 191] : "i32x4.extmul_high_i16x8_u",
-
-        I64x2Abs : [0xfd, 192] : "i64x2.abs",
-        I64x2Neg : [0xfd, 193] : "i64x2.neg",
-        I64x2AllTrue : [0xfd, 195] : "i64x2.all_true",
-        I64x2Bitmask : [0xfd, 196] : "i64x2.bitmask",
-        I64x2ExtendLowI32x4S : [0xfd, 199] : "i64x2.extend_low_i32x4_s",
-        I64x2ExtendHighI32x4S : [0xfd, 200] : "i64x2.extend_high_i32x4_s",
-        I64x2ExtendLowI32x4U : [0xfd, 201] : "i64x2.extend_low_i32x4_u",
-        I64x2ExtendHighI32x4U : [0xfd, 202] : "i64x2.extend_high_i32x4_u",
-        I64x2Shl : [0xfd, 203] : "i64x2.shl",
-        I64x2ShrS : [0xfd, 204] : "i64x2.shr_s",
-        I64x2ShrU : [0xfd, 205] : "i64x2.shr_u",
-        I64x2Add : [0xfd, 206] : "i64x2.add",
-        I64x2Sub : [0xfd, 209] : "i64x2.sub",
-        I64x2Mul : [0xfd, 213] : "i64x2.mul",
-        I64x2ExtMulLowI32x4S : [0xfd, 220] : "i64x2.extmul_low_i32x4_s",
-        I64x2ExtMulHighI32x4S : [0xfd, 221] : "i64x2.extmul_high_i32x4_s",
-        I64x2ExtMulLowI32x4U : [0xfd, 222] : "i64x2.extmul_low_i32x4_u",
-        I64x2ExtMulHighI32x4U : [0xfd, 223] : "i64x2.extmul_high_i32x4_u",
-
-        F32x4Ceil : [0xfd, 103] : "f32x4.ceil",
-        F32x4Floor : [0xfd, 104] : "f32x4.floor",
-        F32x4Trunc : [0xfd, 105] : "f32x4.trunc",
-        F32x4Nearest : [0xfd, 106] : "f32x4.nearest",
-        F32x4Abs : [0xfd, 224] : "f32x4.abs",
-        F32x4Neg : [0xfd, 225] : "f32x4.neg",
-        F32x4Sqrt : [0xfd, 227] : "f32x4.sqrt",
-        F32x4Add : [0xfd, 228] : "f32x4.add",
-        F32x4Sub : [0xfd, 229] : "f32x4.sub",
-        F32x4Mul : [0xfd, 230] : "f32x4.mul",
-        F32x4Div : [0xfd, 231] : "f32x4.div",
-        F32x4Min : [0xfd, 232] : "f32x4.min",
-        F32x4Max : [0xfd, 233] : "f32x4.max",
-        F32x4PMin : [0xfd, 234] : "f32x4.pmin",
-        F32x4PMax : [0xfd, 235] : "f32x4.pmax",
-
-        F64x2Ceil : [0xfd, 116] : "f64x2.ceil",
-        F64x2Floor : [0xfd, 117] : "f64x2.floor",
-        F64x2Trunc : [0xfd, 122] : "f64x2.trunc",
-        F64x2Nearest : [0xfd, 148] : "f64x2.nearest",
-        F64x2Abs : [0xfd, 236] : "f64x2.abs",
-        F64x2Neg : [0xfd, 237] : "f64x2.neg",
-        F64x2Sqrt : [0xfd, 239] : "f64x2.sqrt",
-        F64x2Add : [0xfd, 240] : "f64x2.add",
-        F64x2Sub : [0xfd, 241] : "f64x2.sub",
-        F64x2Mul : [0xfd, 242] : "f64x2.mul",
-        F64x2Div : [0xfd, 243] : "f64x2.div",
-        F64x2Min : [0xfd, 244] : "f64x2.min",
-        F64x2Max : [0xfd, 245] : "f64x2.max",
-        F64x2PMin : [0xfd, 246] : "f64x2.pmin",
-        F64x2PMax : [0xfd, 247] : "f64x2.pmax",
-
-        I32x4TruncSatF32x4S : [0xfd, 248] : "i32x4.trunc_sat_f32x4_s",
-        I32x4TruncSatF32x4U : [0xfd, 249] : "i32x4.trunc_sat_f32x4_u",
-        F32x4ConvertI32x4S : [0xfd, 250] : "f32x4.convert_i32x4_s",
-        F32x4ConvertI32x4U : [0xfd, 251] : "f32x4.convert_i32x4_u",
-        I32x4TruncSatF64x2SZero : [0xfd, 252] : "i32x4.trunc_sat_f64x2_s_zero",
-        I32x4TruncSatF64x2UZero : [0xfd, 253] : "i32x4.trunc_sat_f64x2_u_zero",
-        F64x2ConvertLowI32x4S : [0xfd, 254] : "f64x2.convert_low_i32x4_s",
-        F64x2ConvertLowI32x4U : [0xfd, 255] : "f64x2.convert_low_i32x4_u",
-        F32x4DemoteF64x2Zero : [0xfd, 94] : "f32x4.demote_f64x2_zero",
-        F64x2PromoteLowF32x4 : [0xfd, 95] : "f64x2.promote_low_f32x4",
-
+        // removed: atomics proposal
+        // removed: proposal: shared-everything-threads
+        // removed: proposal: simd
         // Exception handling proposal
         ThrowRef : [0x0a] : "throw_ref",
         TryTable(TryTable<'a>) : [0x1f] : "try_table",
@@ -1167,41 +748,9 @@ instructions! {
         Delegate(Index<'a>) : [0x18] : "delegate",
         CatchAll : [0x19] : "catch_all",
 
-        // Relaxed SIMD proposal
-        I8x16RelaxedSwizzle : [0xfd, 0x100]: "i8x16.relaxed_swizzle",
-        I32x4RelaxedTruncF32x4S : [0xfd, 0x101]: "i32x4.relaxed_trunc_f32x4_s",
-        I32x4RelaxedTruncF32x4U : [0xfd, 0x102]: "i32x4.relaxed_trunc_f32x4_u",
-        I32x4RelaxedTruncF64x2SZero : [0xfd, 0x103]: "i32x4.relaxed_trunc_f64x2_s_zero",
-        I32x4RelaxedTruncF64x2UZero : [0xfd, 0x104]: "i32x4.relaxed_trunc_f64x2_u_zero",
-        F32x4RelaxedMadd : [0xfd, 0x105]: "f32x4.relaxed_madd",
-        F32x4RelaxedNmadd : [0xfd, 0x106]: "f32x4.relaxed_nmadd",
-        F64x2RelaxedMadd : [0xfd, 0x107]: "f64x2.relaxed_madd",
-        F64x2RelaxedNmadd : [0xfd, 0x108]: "f64x2.relaxed_nmadd",
-        I8x16RelaxedLaneselect : [0xfd, 0x109]: "i8x16.relaxed_laneselect",
-        I16x8RelaxedLaneselect : [0xfd, 0x10A]: "i16x8.relaxed_laneselect",
-        I32x4RelaxedLaneselect : [0xfd, 0x10B]: "i32x4.relaxed_laneselect",
-        I64x2RelaxedLaneselect : [0xfd, 0x10C]: "i64x2.relaxed_laneselect",
-        F32x4RelaxedMin : [0xfd, 0x10D]: "f32x4.relaxed_min",
-        F32x4RelaxedMax : [0xfd, 0x10E]: "f32x4.relaxed_max",
-        F64x2RelaxedMin : [0xfd, 0x10F]: "f64x2.relaxed_min",
-        F64x2RelaxedMax : [0xfd, 0x110]: "f64x2.relaxed_max",
-        I16x8RelaxedQ15mulrS: [0xfd, 0x111]: "i16x8.relaxed_q15mulr_s",
-        I16x8RelaxedDotI8x16I7x16S: [0xfd, 0x112]: "i16x8.relaxed_dot_i8x16_i7x16_s",
-        I32x4RelaxedDotI8x16I7x16AddS: [0xfd, 0x113]: "i32x4.relaxed_dot_i8x16_i7x16_add_s",
-
-        // Stack switching proposal
-        ContNew(Index<'a>)             : [0xe0] : "cont.new",
-        ContBind(ContBind<'a>)         : [0xe1] : "cont.bind",
-        Suspend(Index<'a>)             : [0xe2] : "suspend",
-        Resume(Resume<'a>)             : [0xe3] : "resume",
-        ResumeThrow(ResumeThrow<'a>)   : [0xe4] : "resume_throw",
-        Switch(Switch<'a>)             : [0xe5] : "switch",
-
-        // Wide arithmetic proposal
-        I64Add128   : [0xfc, 19] : "i64.add128",
-        I64Sub128   : [0xfc, 20] : "i64.sub128",
-        I64MulWideS : [0xfc, 21] : "i64.mul_wide_s",
-        I64MulWideU : [0xfc, 22] : "i64.mul_wide_u",
+        // removed: Relaxed SIMD proposal
+        // removed: Stack switching proposal
+        // removed: Wide arithmetic proposal
     }
 }
 
@@ -1219,10 +768,7 @@ fn assert_instruction_not_too_large() {
 impl<'a> Instruction<'a> {
     pub(crate) fn needs_data_count(&self) -> bool {
         match self {
-            Instruction::MemoryInit(_)
-            | Instruction::DataDrop(_)
-            | Instruction::ArrayNewData(_)
-            | Instruction::ArrayInitData(_) => true,
+            Instruction::MemoryInit(_) | Instruction::DataDrop(_) => true,
             _ => false,
         }
     }
@@ -1495,7 +1041,7 @@ pub struct MemArg<'a> {
 }
 
 impl<'a> MemArg<'a> {
-    fn parse(parser: Parser<'a>, default_align: u64) -> Result<Self> {
+    pub(super) fn parse(parser: Parser<'a>, default_align: u64) -> Result<Self> {
         fn parse_field(name: &str, parser: Parser<'_>) -> Result<Option<u64>> {
             parser.step(|c| {
                 let (kw, rest) = match c.keyword()? {
@@ -1546,60 +1092,6 @@ impl<'a> MemArg<'a> {
             offset,
             align,
             memory,
-        })
-    }
-}
-
-/// Extra data associated with the `loadN_lane` and `storeN_lane` instructions.
-#[derive(Debug, Clone)]
-pub struct LoadOrStoreLane<'a> {
-    /// The memory argument for this instruction.
-    pub memarg: MemArg<'a>,
-    /// The lane argument for this instruction.
-    pub lane: LaneArg,
-}
-
-impl<'a> LoadOrStoreLane<'a> {
-    fn parse(parser: Parser<'a>, default_align: u64) -> Result<Self> {
-        // This is sort of funky. The first integer we see could be the lane
-        // index, but it could also be the memory index. To determine what it is
-        // then if we see a second integer we need to look further.
-        let has_memarg = parser.step(|c| match c.integer()? {
-            Some((_, after_int)) => {
-                // Two integers in a row? That means that the first one is the
-                // memory index and the second must be the lane index.
-                if after_int.integer()?.is_some() {
-                    return Ok((true, c));
-                }
-
-                // If the first integer is trailed by `offset=...` or
-                // `align=...` then this is definitely a memarg.
-                if let Some((kw, _)) = after_int.keyword()? {
-                    if kw.starts_with("offset=") || kw.starts_with("align=") {
-                        return Ok((true, c));
-                    }
-                }
-
-                // Otherwise the first integer was trailed by something that
-                // didn't look like a memarg, so this must be the lane index.
-                Ok((false, c))
-            }
-
-            // Not an integer here? That must mean that this must be the memarg
-            // first followed by the trailing index.
-            None => Ok((true, c)),
-        })?;
-        Ok(LoadOrStoreLane {
-            memarg: if has_memarg {
-                MemArg::parse(parser, default_align)?
-            } else {
-                MemArg {
-                    align: default_align,
-                    offset: 0,
-                    memory: Index::Num(0, parser.prev_span()),
-                }
-            },
-            lane: LaneArg::parse(parser)?,
         })
     }
 }

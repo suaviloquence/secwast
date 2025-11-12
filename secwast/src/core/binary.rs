@@ -1,6 +1,7 @@
 use crate::Wat;
 #[cfg(feature = "component-model")]
 use crate::component::Component;
+use crate::core::labels::AllInstructions;
 use crate::core::*;
 use crate::encode::Encode;
 use crate::token::*;
@@ -872,13 +873,6 @@ where
     }
 }
 
-impl Encode for LoadOrStoreLane<'_> {
-    fn encode(&self, e: &mut Vec<u8>) {
-        self.memarg.encode(e);
-        self.lane.encode(e);
-    }
-}
-
 impl Encode for CallIndirect<'_> {
     fn encode(&self, e: &mut Vec<u8>) {
         self.ty.unwrap_u32().encode(e);
@@ -1078,18 +1072,20 @@ fn find_names<'a>(
                 }
 
                 for i in expression.instrs.iter() {
-                    match i {
-                        Instruction::If(block)
-                        | Instruction::Block(block)
-                        | Instruction::Loop(block)
-                        | Instruction::Try(block)
-                        | Instruction::TryTable(TryTable { block, .. }) => {
-                            if let Some(name) = get_name(&block.label, &block.label_name) {
-                                label_names.push((label_idx, name));
+                    if let AllInstructions::Other(i) = i {
+                        match i {
+                            Instruction::If(block)
+                            | Instruction::Block(block)
+                            | Instruction::Loop(block)
+                            | Instruction::Try(block)
+                            | Instruction::TryTable(TryTable { block, .. }) => {
+                                if let Some(name) = get_name(&block.label, &block.label_name) {
+                                    label_names.push((label_idx, name));
+                                }
+                                label_idx += 1;
                             }
-                            label_idx += 1;
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }

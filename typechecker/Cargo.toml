@@ -1,0 +1,12 @@
+[package]
+name = "typechecker"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+secwast = { path = "../secwast" }
+
+[lints]
+workspace = true

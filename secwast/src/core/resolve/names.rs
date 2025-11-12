@@ -1,4 +1,5 @@
 use crate::Error;
+use crate::core::labels::AllInstructions;
 use crate::core::resolve::Ns;
 use crate::core::*;
 use crate::names::{Namespace, resolve_error};
@@ -381,313 +382,176 @@ impl<'a, 'b> ExprResolver<'a, 'b> {
         Ok(())
     }
 
-    fn resolve_instr(&mut self, instr: &mut Instruction<'a>) -> Result<(), Error> {
+    fn resolve_instr(&mut self, instr: &mut AllInstructions<'a>) -> Result<(), Error> {
         use Instruction::*;
 
         if let Some(m) = instr.memarg_mut() {
             self.resolver.resolve(&mut m.memory, Ns::Memory)?;
         }
 
-        match instr {
-            MemorySize(i) | MemoryGrow(i) | MemoryFill(i) | MemoryDiscard(i) => {
-                self.resolver.resolve(&mut i.mem, Ns::Memory)?;
-            }
-            MemoryInit(i) => {
-                self.resolver.datas.resolve(&mut i.data, "data")?;
-                self.resolver.resolve(&mut i.mem, Ns::Memory)?;
-            }
-            MemoryCopy(i) => {
-                self.resolver.resolve(&mut i.src, Ns::Memory)?;
-                self.resolver.resolve(&mut i.dst, Ns::Memory)?;
-            }
-            DataDrop(i) => {
-                self.resolver.datas.resolve(i, "data")?;
-            }
+        if let AllInstructions::Other(instr) = instr {
+            match instr {
+                MemorySize(i) | MemoryGrow(i) | MemoryFill(i) | MemoryDiscard(i) => {
+                    self.resolver.resolve(&mut i.mem, Ns::Memory)?;
+                }
+                MemoryInit(i) => {
+                    self.resolver.datas.resolve(&mut i.data, "data")?;
+                    self.resolver.resolve(&mut i.mem, Ns::Memory)?;
+                }
+                MemoryCopy(i) => {
+                    self.resolver.resolve(&mut i.src, Ns::Memory)?;
+                    self.resolver.resolve(&mut i.dst, Ns::Memory)?;
+                }
+                DataDrop(i) => {
+                    self.resolver.datas.resolve(i, "data")?;
+                }
 
-            TableInit(i) => {
-                self.resolver.elems.resolve(&mut i.elem, "elem")?;
-                self.resolver.resolve(&mut i.table, Ns::Table)?;
-            }
-            ElemDrop(i) => {
-                self.resolver.elems.resolve(i, "elem")?;
-            }
+                TableInit(i) => {
+                    self.resolver.elems.resolve(&mut i.elem, "elem")?;
+                    self.resolver.resolve(&mut i.table, Ns::Table)?;
+                }
+                ElemDrop(i) => {
+                    self.resolver.elems.resolve(i, "elem")?;
+                }
 
-            TableCopy(i) => {
-                self.resolver.resolve(&mut i.dst, Ns::Table)?;
-                self.resolver.resolve(&mut i.src, Ns::Table)?;
-            }
+                TableCopy(i) => {
+                    self.resolver.resolve(&mut i.dst, Ns::Table)?;
+                    self.resolver.resolve(&mut i.src, Ns::Table)?;
+                }
 
-            TableFill(i) | TableSet(i) | TableGet(i) | TableSize(i) | TableGrow(i) => {
-                self.resolver.resolve(&mut i.dst, Ns::Table)?;
-            }
+                TableFill(i) | TableSet(i) | TableGet(i) | TableSize(i) | TableGrow(i) => {
+                    self.resolver.resolve(&mut i.dst, Ns::Table)?;
+                }
 
-            TableAtomicGet(i)
-            | TableAtomicSet(i)
-            | TableAtomicRmwXchg(i)
-            | TableAtomicRmwCmpxchg(i) => {
-                self.resolver.resolve(&mut i.inner.dst, Ns::Table)?;
-            }
+                GlobalSet(i) | GlobalGet(i) => {
+                    self.resolver.resolve(i, Ns::Global)?;
+                }
 
-            GlobalSet(i) | GlobalGet(i) => {
-                self.resolver.resolve(i, Ns::Global)?;
-            }
-
-            GlobalAtomicSet(i)
-            | GlobalAtomicGet(i)
-            | GlobalAtomicRmwAdd(i)
-            | GlobalAtomicRmwSub(i)
-            | GlobalAtomicRmwAnd(i)
-            | GlobalAtomicRmwOr(i)
-            | GlobalAtomicRmwXor(i)
-            | GlobalAtomicRmwXchg(i)
-            | GlobalAtomicRmwCmpxchg(i) => {
-                self.resolver.resolve(&mut i.inner, Ns::Global)?;
-            }
-
-            LocalSet(i) | LocalGet(i) | LocalTee(i) => {
-                assert!(self.scopes.len() > 0);
-                // Resolve a local by iterating over scopes from most recent
-                // to less recent. This allows locals added by `let` blocks to
-                // shadow less recent locals.
-                for (depth, scope) in self.scopes.iter().enumerate().rev() {
-                    if let Err(e) = scope.resolve(i, "local") {
-                        if depth == 0 {
-                            // There are no more scopes left, report this as
-                            // the result
-                            return Err(e);
+                LocalSet(i) | LocalGet(i) | LocalTee(i) => {
+                    assert!(self.scopes.len() > 0);
+                    // Resolve a local by iterating over scopes from most recent
+                    // to less recent. This allows locals added by `let` blocks to
+                    // shadow less recent locals.
+                    for (depth, scope) in self.scopes.iter().enumerate().rev() {
+                        if let Err(e) = scope.resolve(i, "local") {
+                            if depth == 0 {
+                                // There are no more scopes left, report this as
+                                // the result
+                                return Err(e);
+                            }
+                        } else {
+                            break;
                         }
-                    } else {
-                        break;
+                    }
+                    // We must have taken the `break` and resolved the local
+                    assert!(i.is_resolved());
+                }
+
+                Call(i) | RefFunc(i) | ReturnCall(i) => {
+                    self.resolver.resolve(i, Ns::Func)?;
+                }
+
+                CallIndirect(c) | ReturnCallIndirect(c) => {
+                    self.resolver.resolve(&mut c.table, Ns::Table)?;
+                    self.resolver.resolve_type_use(&mut c.ty)?;
+                }
+
+                CallRef(i) | ReturnCallRef(i) => {
+                    self.resolver.resolve(i, Ns::Type)?;
+                }
+
+                Block(bt) | If(bt) | Loop(bt) | Try(bt) => {
+                    self.blocks.push(ExprBlock {
+                        label: bt.label,
+                        pushed_scope: false,
+                    });
+                    self.resolve_block_type(bt)?;
+                }
+                TryTable(try_table) => {
+                    self.resolve_block_type(&mut try_table.block)?;
+                    for catch in &mut try_table.catches {
+                        if let Some(tag) = catch.kind.tag_index_mut() {
+                            self.resolver.resolve(tag, Ns::Tag)?;
+                        }
+                        self.resolve_label(&mut catch.label)?;
+                    }
+                    self.blocks.push(ExprBlock {
+                        label: try_table.block.label,
+                        pushed_scope: false,
+                    });
+                }
+
+                // On `End` instructions we pop a label from the stack, and for both
+                // `End` and `Else` instructions if they have labels listed we
+                // verify that they match the label at the beginning of the block.
+                Else(_) | End(_) => {
+                    let (matching_block, label) = match &instr {
+                        Else(label) => (self.blocks.last().cloned(), label),
+                        End(label) => (self.blocks.pop(), label),
+                        _ => unreachable!(),
+                    };
+                    let matching_block = match matching_block {
+                        Some(l) => l,
+                        None => return Ok(()),
+                    };
+
+                    // Reset the local scopes to before this block was entered
+                    if matching_block.pushed_scope {
+                        if let End(_) = instr {
+                            self.scopes.pop();
+                        }
+                    }
+
+                    let label = match label {
+                        Some(l) => l,
+                        None => return Ok(()),
+                    };
+                    if Some(*label) == matching_block.label {
+                        return Ok(());
+                    }
+                    return Err(Error::new(
+                        label.span(),
+                        "mismatching labels between end and block".to_string(),
+                    ));
+                }
+
+                Br(i) | BrIf(i) | BrOnNull(i) | BrOnNonNull(i) => {
+                    self.resolve_label(i)?;
+                }
+
+                BrTable(i) => {
+                    for label in i.labels.iter_mut() {
+                        self.resolve_label(label)?;
+                    }
+                    self.resolve_label(&mut i.default)?;
+                }
+
+                Throw(i) | Catch(i) => {
+                    self.resolver.resolve(i, Ns::Tag)?;
+                }
+
+                Rethrow(i) => {
+                    self.resolve_label(i)?;
+                }
+
+                Delegate(i) => {
+                    // Since a delegate starts counting one layer out from the
+                    // current try-delegate block, we pop before we resolve labels.
+                    self.blocks.pop();
+                    self.resolve_label(i)?;
+                }
+
+                Select(s) => {
+                    if let Some(list) = &mut s.tys {
+                        for ty in list {
+                            self.resolver.resolve_valtype(ty)?;
+                        }
                     }
                 }
-                // We must have taken the `break` and resolved the local
-                assert!(i.is_resolved());
-            }
 
-            Call(i) | RefFunc(i) | ReturnCall(i) => {
-                self.resolver.resolve(i, Ns::Func)?;
-            }
+                RefNull(ty) => self.resolver.resolve_heaptype(ty)?,
 
-            CallIndirect(c) | ReturnCallIndirect(c) => {
-                self.resolver.resolve(&mut c.table, Ns::Table)?;
-                self.resolver.resolve_type_use(&mut c.ty)?;
-            }
-
-            CallRef(i) | ReturnCallRef(i) => {
-                self.resolver.resolve(i, Ns::Type)?;
-            }
-
-            Block(bt) | If(bt) | Loop(bt) | Try(bt) => {
-                self.blocks.push(ExprBlock {
-                    label: bt.label,
-                    pushed_scope: false,
-                });
-                self.resolve_block_type(bt)?;
-            }
-            TryTable(try_table) => {
-                self.resolve_block_type(&mut try_table.block)?;
-                for catch in &mut try_table.catches {
-                    if let Some(tag) = catch.kind.tag_index_mut() {
-                        self.resolver.resolve(tag, Ns::Tag)?;
-                    }
-                    self.resolve_label(&mut catch.label)?;
-                }
-                self.blocks.push(ExprBlock {
-                    label: try_table.block.label,
-                    pushed_scope: false,
-                });
-            }
-
-            // On `End` instructions we pop a label from the stack, and for both
-            // `End` and `Else` instructions if they have labels listed we
-            // verify that they match the label at the beginning of the block.
-            Else(_) | End(_) => {
-                let (matching_block, label) = match &instr {
-                    Else(label) => (self.blocks.last().cloned(), label),
-                    End(label) => (self.blocks.pop(), label),
-                    _ => unreachable!(),
-                };
-                let matching_block = match matching_block {
-                    Some(l) => l,
-                    None => return Ok(()),
-                };
-
-                // Reset the local scopes to before this block was entered
-                if matching_block.pushed_scope {
-                    if let End(_) = instr {
-                        self.scopes.pop();
-                    }
-                }
-
-                let label = match label {
-                    Some(l) => l,
-                    None => return Ok(()),
-                };
-                if Some(*label) == matching_block.label {
-                    return Ok(());
-                }
-                return Err(Error::new(
-                    label.span(),
-                    "mismatching labels between end and block".to_string(),
-                ));
-            }
-
-            Br(i) | BrIf(i) | BrOnNull(i) | BrOnNonNull(i) => {
-                self.resolve_label(i)?;
-            }
-
-            BrTable(i) => {
-                for label in i.labels.iter_mut() {
-                    self.resolve_label(label)?;
-                }
-                self.resolve_label(&mut i.default)?;
-            }
-
-            Throw(i) | Catch(i) => {
-                self.resolver.resolve(i, Ns::Tag)?;
-            }
-
-            Rethrow(i) => {
-                self.resolve_label(i)?;
-            }
-
-            Delegate(i) => {
-                // Since a delegate starts counting one layer out from the
-                // current try-delegate block, we pop before we resolve labels.
-                self.blocks.pop();
-                self.resolve_label(i)?;
-            }
-
-            Select(s) => {
-                if let Some(list) = &mut s.tys {
-                    for ty in list {
-                        self.resolver.resolve_valtype(ty)?;
-                    }
-                }
-            }
-
-            RefTest(i) => {
-                self.resolver.resolve_reftype(&mut i.r#type)?;
-            }
-            RefCast(i) => {
-                self.resolver.resolve_reftype(&mut i.r#type)?;
-            }
-            BrOnCast(i) => {
-                self.resolve_label(&mut i.label)?;
-                self.resolver.resolve_reftype(&mut i.to_type)?;
-                self.resolver.resolve_reftype(&mut i.from_type)?;
-            }
-            BrOnCastFail(i) => {
-                self.resolve_label(&mut i.label)?;
-                self.resolver.resolve_reftype(&mut i.to_type)?;
-                self.resolver.resolve_reftype(&mut i.from_type)?;
-            }
-
-            StructNew(i) | StructNewDefault(i) | ArrayNew(i) | ArrayNewDefault(i) | ArrayGet(i)
-            | ArrayGetS(i) | ArrayGetU(i) | ArraySet(i) => {
-                self.resolver.resolve(i, Ns::Type)?;
-            }
-
-            StructSet(s) | StructGet(s) | StructGetS(s) | StructGetU(s) => {
-                self.resolve_field(s)?;
-            }
-
-            StructAtomicGet(s)
-            | StructAtomicGetS(s)
-            | StructAtomicGetU(s)
-            | StructAtomicSet(s)
-            | StructAtomicRmwAdd(s)
-            | StructAtomicRmwSub(s)
-            | StructAtomicRmwAnd(s)
-            | StructAtomicRmwOr(s)
-            | StructAtomicRmwXor(s)
-            | StructAtomicRmwXchg(s)
-            | StructAtomicRmwCmpxchg(s) => {
-                self.resolve_field(&mut s.inner)?;
-            }
-
-            ArrayNewFixed(a) => {
-                self.resolver.resolve(&mut a.array, Ns::Type)?;
-            }
-            ArrayNewData(a) => {
-                self.resolver.resolve(&mut a.array, Ns::Type)?;
-                self.resolver.datas.resolve(&mut a.data_idx, "data")?;
-            }
-            ArrayNewElem(a) => {
-                self.resolver.resolve(&mut a.array, Ns::Type)?;
-                self.resolver.elems.resolve(&mut a.elem_idx, "elem")?;
-            }
-            ArrayFill(a) => {
-                self.resolver.resolve(&mut a.array, Ns::Type)?;
-            }
-            ArrayCopy(a) => {
-                self.resolver.resolve(&mut a.dest_array, Ns::Type)?;
-                self.resolver.resolve(&mut a.src_array, Ns::Type)?;
-            }
-            ArrayInitData(a) => {
-                self.resolver.resolve(&mut a.array, Ns::Type)?;
-                self.resolver.datas.resolve(&mut a.segment, "data")?;
-            }
-            ArrayInitElem(a) => {
-                self.resolver.resolve(&mut a.array, Ns::Type)?;
-                self.resolver.elems.resolve(&mut a.segment, "elem")?;
-            }
-
-            ArrayAtomicGet(i)
-            | ArrayAtomicGetS(i)
-            | ArrayAtomicGetU(i)
-            | ArrayAtomicSet(i)
-            | ArrayAtomicRmwAdd(i)
-            | ArrayAtomicRmwSub(i)
-            | ArrayAtomicRmwAnd(i)
-            | ArrayAtomicRmwOr(i)
-            | ArrayAtomicRmwXor(i)
-            | ArrayAtomicRmwXchg(i)
-            | ArrayAtomicRmwCmpxchg(i) => {
-                self.resolver.resolve(&mut i.inner, Ns::Type)?;
-            }
-
-            RefNull(ty) => self.resolver.resolve_heaptype(ty)?,
-
-            ContNew(ty) => {
-                self.resolver.resolve(ty, Ns::Type)?;
-            }
-            ContBind(cb) => {
-                self.resolver.resolve(&mut cb.argument_index, Ns::Type)?;
-                self.resolver.resolve(&mut cb.result_index, Ns::Type)?;
-            }
-            Suspend(ty) => {
-                self.resolver.resolve(ty, Ns::Tag)?;
-            }
-            Resume(r) => {
-                self.resolver.resolve(&mut r.type_index, Ns::Type)?;
-                self.resolve_resume_table(&mut r.table)?;
-            }
-            ResumeThrow(rt) => {
-                self.resolver.resolve(&mut rt.type_index, Ns::Type)?;
-                self.resolver.resolve(&mut rt.tag_index, Ns::Tag)?;
-                self.resolve_resume_table(&mut rt.table)?;
-            }
-            Switch(s) => {
-                self.resolver.resolve(&mut s.type_index, Ns::Type)?;
-                self.resolver.resolve(&mut s.tag_index, Ns::Tag)?;
-            }
-
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn resolve_resume_table(&self, table: &mut ResumeTable<'a>) -> Result<(), Error> {
-        for handle in &mut table.handlers {
-            match handle {
-                Handle::OnLabel { tag, label } => {
-                    self.resolver.resolve(tag, Ns::Tag)?;
-                    self.resolve_label(label)?;
-                }
-                Handle::OnSwitch { tag } => {
-                    self.resolver.resolve(tag, Ns::Tag)?;
-                }
+                _ => {}
             }
         }
         Ok(())
@@ -712,18 +576,6 @@ impl<'a, 'b> ExprResolver<'a, 'b> {
             }
             None => Err(resolve_error(id, "label")),
         }
-    }
-
-    fn resolve_field(&self, s: &mut StructAccess<'a>) -> Result<(), Error> {
-        let type_index = self.resolver.resolve(&mut s.r#struct, Ns::Type)?;
-        if let Index::Id(field_id) = s.field {
-            self.resolver
-                        .fields
-                        .get(&type_index)
-                        .ok_or(Error::new(field_id.span(), format!("accessing a named field `{}` in a struct without named fields, type index {}", field_id.name(), type_index)))?
-                        .resolve(&mut s.field, "field")?;
-        }
-        Ok(())
     }
 }
 

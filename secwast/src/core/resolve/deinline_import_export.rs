@@ -1,3 +1,4 @@
+use crate::core::labels::AllInstructions;
 use crate::core::*;
 use crate::gensym;
 use crate::token::{Id, Index, Span};
@@ -79,7 +80,7 @@ pub fn run(fields: &mut Vec<ModuleField>) {
                             name: None,
                             kind: DataKind::Active {
                                 memory: Index::Id(id),
-                                offset: Expression::one(if is64 {
+                                offset: Expression::one_other(if is64 {
                                     Instruction::I64Const(0)
                                 } else {
                                     Instruction::I32Const(0)
@@ -149,9 +150,9 @@ pub fn run(fields: &mut Vec<ModuleField>) {
                             kind: ElemKind::Active {
                                 table: Some(Index::Id(id)),
                                 offset: Expression::one(if is64 {
-                                    Instruction::I64Const(0)
+                                    AllInstructions::Other(Instruction::I64Const(0))
                                 } else {
-                                    Instruction::I32Const(0)
+                                    AllInstructions::Other(Instruction::I32Const(0))
                                 }),
                             },
                             payload,
